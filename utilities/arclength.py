@@ -15,7 +15,7 @@ class ArcLengthParametrizer(object):
     space dependent. If you have something time dependent you are asked to query
     this class time by time. We assume that the curve is parametrized from 0 to 1.
     """
-    def __init__(self, vector_space, init_control_points,length_constraint = 0, arcfactor = 10):
+    def __init__(self, vector_space, init_control_points,length_constraint = 0, constrained = 0, arcfactor = 10):
 		"""The constructor needs an initital curve and we ask for a factor that we will use to 
 		numerically approximate the arclength, therefore we have called it arcfactor. We expect the
 		curve to be composed by a vector space and a control point array. The length_constraint 
@@ -31,6 +31,7 @@ class ArcLengthParametrizer(object):
 		#print self.init_control_points.shape
 		self.orig_shape = self.all_init_control_points.shape
 		self.length_constraint = length_constraint
+		self.constrained = constrained 
 		if(len(self.orig_shape) > 2):
 			print "We will interpret wathever there is between first and last indeces of init_control_points shape as a list among which reparametrize"
 			self.param_list = np.array(self.orig_shape[1:-1])
@@ -53,24 +54,47 @@ class ArcLengthParametrizer(object):
 		the new knot vector that you can use to build an arclength reparametrized curve. """
 		print "Starting the reparametrization"
 		if(self.param_tot != 0):
-			for i in range(self.param_tot):
-				self.init_control_points = np.squeeze(self.all_init_control_points[:,i,:])
-				self.curve = self.vector_space.element(self.init_control_points)
-				self.compute_arclength(i)
-				print "Assembling the LS system"
-				self.reparametrization_LS_assembler()
-				print "Solving the system"
-				self.new_control_points = np.asarray(self.reparametrization_LS_solver())
-				#At this point we can impose that each reparametrization maintains the same length.
-				if (self.length_constraint == 1):
-					self.length_fixer(self.lengths[i])
-				self.all_new_control_points[:,i,:] = self.new_control_points
-			if(self.length_constraint == 2):
+			if(self.length_constraint == 3):
+				print "WE UNDO THE REPARAM. DEAL WITH IT"
+				for i in range(self.param_tot):
+					self.init_control_points = np.squeeze(self.all_init_control_points[:,i,:])
+					self.curve = self.vector_space.element(self.init_control_points)
+					self.compute_arclength(i)
+
+				self.all_new_control_points = self.all_init_control_points
 				self.max_length = np.max(self.lengths)
 				for i in range(self.param_tot):
 					self.new_control_points = self.all_new_control_points[:,i,:]
 					self.length_fixer(self.max_length)
 					self.all_new_control_points[:,i,:] = self.new_control_points
+			else:
+				for i in range(self.param_tot):
+					self.init_control_points = np.squeeze(self.all_init_control_points[:,i,:])
+					self.curve = self.vector_space.element(self.init_control_points)
+					self.compute_arclength(i)
+					if(self.constrained == 1):
+						print "Assembling the LS constrained system"
+						self.constrained_reparametrization_LS_assembler(i)
+						print "Solving the constrained system"
+						self.new_control_points = np.asarray(self.constrained_reparametrization_LS_solver())
+					else:
+						print "Assembling the LS system"
+						self.reparametrization_LS_assembler(i)
+						print "Solving the system"
+						self.new_control_points = np.asarray(self.reparametrization_LS_solver())
+					#At this point we can impose that each reparametrization maintains the same length.
+					if (self.length_constraint == 1):
+						self.length_fixer(self.lengths[i])
+					self.all_new_control_points[:,i,:] = self.new_control_points
+				if(self.length_constraint == 2):
+					self.max_length = np.max(self.lengths)
+					for i in range(self.param_tot):
+						self.new_control_points = self.all_new_control_points[:,i,:]
+						self.length_fixer(self.max_length)
+						self.all_new_control_points[:,i,:] = self.new_control_points
+
+
+
 			self.all_new_control_points = self.all_new_control_points.reshape(self.orig_shape)
 		else:
 			self.init_control_points = self.all_init_control_points
@@ -124,7 +148,7 @@ class ArcLengthParametrizer(object):
 		# 		tval = self.points_s[i,0]
 		# return tval
 
-    def reparametrization_LS_assembler(self):
+    def reparametrization_LS_assembler(self,parameter=0):
 		"""In this function we compute the arclength reparametrization by mean of a Least Square 
 		problem."""
 		
@@ -151,7 +175,8 @@ class ArcLengthParametrizer(object):
 		#Bmatrixnumelem = self.dim * s_array.shape[0] * self.n_dofs * self.dim
 		#self.matrixB = np.zeros(Bmatrixnumelem).reshape(self.dim * s_array.shape[0], self.n_dofs * self.dim)
 		#self.rhsinit = np.zeros(self.dim * s_array.shape[0])
-		self.matrixB = interpolation_matrix(self.vector_space, sval)
+		if(parameter==0):
+			self.matrixB = interpolation_matrix(self.vector_space, sval)
 
 		# for i in range(0, s_array.shape[0]):
 		# 	for j in range(0, self.n_dofs):
@@ -162,6 +187,43 @@ class ArcLengthParametrizer(object):
 		# 		self.rhsinit[self.dim * i + d] = self.point_ls[i,d]
 
 
+    def constrained_reparametrization_LS_assembler(self,parameter=0):
+		"""In this function we compute the arclength reparametrization by mean of a Least Square 
+		problem. We need to apply some constraints to our system in order to efficiently reparametrize
+		our curve."""
+		
+		s_array = np.linspace(0, self.points_s[-1,1], self.arcfactor * self.n_dofs)
+		self.point_ls = np.asmatrix(np.zeros([s_array.shape[0],self.dim + 2]))
+		tval = np.zeros(s_array.shape[0])
+		sval = np.linspace(0,1,s_array.shape[0])
+		for i in range(0, s_array.shape[0]):
+			tval[i] = self.find_s(s_array[i])
+		self.point_ls[:,0:self.dim] = np.squeeze(self.curve(tval).transpose())
+		self.rhsinit = np.squeeze(self.curve(tval).transpose())
+		self.point_ls[:,self.dim] = tval[:,np.newaxis]
+		self.rhsx = np.zeros((self.n_dofs + 1, 1))
+		self.rhsy = np.zeros((self.n_dofs + 2, 1))
+		self.rhsz = np.zeros((self.n_dofs + 2, 1))
+		if(parameter==0):
+			self.matrixBx = np.zeros((self.n_dofs + 1, self.n_dofs  + 1))
+			self.matrixByz = np.zeros((self.n_dofs  + 2, self.n_dofs  + 2))
+			self.matrixBtB = np.zeros((self.n_dofs  , self.n_dofs ))
+			self.matrixConstraints = np.zeros((2, self.n_dofs))
+			self.matrixB = interpolation_matrix(self.vector_space, sval)			
+			self.matrixBtB = np.dot(self.matrixB.transpose(), self.matrixB)
+			self.matrixConstraints[0,0] = 1.
+			self.matrixConstraints[1,0] = 1.
+			self.matrixConstraints[1,1] = -1.
+			self.matrixBx[:-1,:-1] = self.matrixBtB
+			self.matrixBx[-1,:-1] = self.matrixConstraints[0,:]
+			self.matrixBx[:-1,-1] = self.matrixConstraints.transpose()[:,0]#,np.newaxis]
+			self.matrixByz[:-2,:-2] = self.matrixBtB
+			self.matrixByz[-2:,:-2] = self.matrixConstraints[:,:]
+			self.matrixByz[:-2,-2:] = self.matrixConstraints.transpose()[:,:]
+		self.rhsx[:-1,0]=np.dot(self.matrixB.transpose(), self.rhsinit[:,0])
+		self.rhsy[:-2,0]=np.dot(self.matrixB.transpose(), self.rhsinit[:,1])
+		self.rhsz[:-2,0]=np.dot(self.matrixB.transpose(), self.rhsinit[:,2])
+        
     def reparametrization_LS_solver(self):
 		"""In this method we solve the LS system assembled before. The result should be the new knot_vector that
 		will form the arclength reparametrized curve."""
@@ -169,6 +231,19 @@ class ArcLengthParametrizer(object):
 		res = np.linalg.lstsq(self.matrixB, self.rhsinit)
 		#print res[0]
 		return res[0]
+
+
+    def constrained_reparametrization_LS_solver(self):
+		"""In this method we solve the constrained LS system assembled before. The result should be the new knot_vector that
+		will form the arclength reparametrized curve. It should respect the constraints we have applied"""
+		resx = np.linalg.solve(self.matrixBx, self.rhsx)
+		resy = np.linalg.solve(self.matrixByz, self.rhsy)
+		resz = np.linalg.solve(self.matrixByz, self.rhsz)
+		#print resx.shape, resy.shape, resz.shape
+		#return c_[resx[:-1], resy[:-2], resz[:-2]]
+		return np.squeeze(np.array([resx[:-1], resy[:-2], resz[:-2]])).transpose()
+
+
 
     def length_fixer(self,prescribed_length=1):
 		"""In this method we modify the arclength parametrization we have obtained in order to get a prescribe length.
@@ -187,6 +262,7 @@ class ArcLengthParametrizer(object):
 		for i in range(1, self.new_points_s.shape[0]):
 			self.new_points_s[i,1] = np.linalg.norm(all_points_diff[i-1,:]) + self.new_points_s[i-1,1]
 		actual_length = self.new_points_s[-1,1]
+	#	print actual_length, prescribed_length
 		self.new_control_points *= prescribed_length / actual_length
 		self.new_control_points += cp0
 		return self.new_control_points
